@@ -1,5 +1,6 @@
 // Set vars.
 var lc = document.getElementById('lc-text');
+var lcTranslation = document.getElementById('lc-translation');
 var button = document.getElementById('lc-button');
 
 var recognizing = false;
@@ -11,14 +12,52 @@ var transcript = [];
 var startTime;
 var beginTime;
 var autoRestart = false;
+var translationTimeout = null;
 
 recognition.continuous = true;
 recognition.interimResults = true;
 
-var languageSelector = document.getElementById('language-selector');
+var sourceLanguageSelector = document.getElementById('source-language-selector');
+var targetLanguageSelector = document.getElementById('target-language-selector');
 
-languageSelector.addEventListener('change', function() {
-  recognition.lang = languageSelector.value;
+// Initialize with default values
+var currentSourceLang = 'en';
+var currentTargetLang = 'ja';
+
+sourceLanguageSelector.addEventListener('change', function() {
+  currentSourceLang = sourceLanguageSelector.value;
+  if (recognizing) {
+    // Restart recognition with new language
+    recognition.stop();
+    setTimeout(function() {
+      recognition.lang = currentSourceLang;
+      recognition.start();
+    }, 100);
+  } else {
+    recognition.lang = currentSourceLang;
+  }
+});
+
+targetLanguageSelector.addEventListener('change', function() {
+  currentTargetLang = targetLanguageSelector.value;
+  // Clear current translation when target language changes
+  if (lcTranslation.firstChild) {
+    lcTranslation.firstChild.data = '';
+  }
+});
+
+// Initialize translation element
+if (lcTranslation.firstChild) {
+  lcTranslation.firstChild.data = '';
+} else {
+  lcTranslation.appendChild(document.createTextNode(''));
+}
+
+// Add keyboard shortcut to stop recognition (Escape key)
+document.addEventListener('keydown', function(event) {
+  if (event.key === 'Escape' && recognizing) {
+    stopRecognition(event);
+  }
 });
 
 if (! sessions){
@@ -31,12 +70,33 @@ if (! sessions){
 recognition.onstart = function() {
   recognizing = true;
   recordSession();
+  
+  // Add visual indicator that we're listening
+  if (lc.firstChild) {
+    lc.firstChild.data = "Listening... Speak now.";
+  }
+  if (lcTranslation.firstChild) {
+    lcTranslation.firstChild.data = "";
+  }
 };
 
 recognition.onerror = function(event) {
   console.log("Recognition error: ", event.message ? event.message : event.error);
   if ((event.error == "no-speech") || (event.error == "audio-capture") || (event.error == "network") || (event.error == "bad-grammar")){
-    refresh();
+    // Show "no speech detected" message briefly
+    if (lc.firstChild) {
+      lc.firstChild.data = "No speech detected. Please speak clearly.";
+    }
+    if (lcTranslation.firstChild) {
+      lcTranslation.firstChild.data = "";
+    }
+    
+    // Auto-refresh after a short delay
+    setTimeout(function() {
+      if (recognizing) {
+        refresh();
+      }
+    }, 2000);
   }
 };
 
@@ -50,7 +110,20 @@ recognition.onend = function() {
 recognition.onresult = function(event) {
   for (var i = event.resultIndex; i < event.results.length; ++i) {
     if(event.results[i][0].confidence > 0.4) {
-      lc.firstChild.data = capitalize(event.results[i][0].transcript);
+      var transcript = capitalize(event.results[i][0].transcript);
+      lc.firstChild.data = transcript;
+      
+      // Show processing indicator for translation
+      if (lcTranslation.firstChild) {
+        lcTranslation.firstChild.data = "Translating...";
+      }
+      
+      // Add processing animation
+      lcTranslation.classList.add('processing');
+      
+      // Translate the text to target language
+      translateText(transcript);
+      
       if (event.results[i].isFinal) {
         addToTranscript(sessions[currentSession].name, event.results[i][0].transcript);
       }
@@ -66,22 +139,99 @@ function capitalize(s) {
   });
 }
 
+function translateText(text) {
+  if (!text || text.trim() === '') {
+    if (lcTranslation.firstChild) {
+      lcTranslation.firstChild.data = '';
+    }
+    return;
+  }
+  
+  // Clear previous timeout to debounce translations
+  if (translationTimeout) {
+    clearTimeout(translationTimeout);
+  }
+  
+  // Debounce translation requests to avoid too many API calls
+  translationTimeout = setTimeout(function() {
+    // Use Google Translate API (free tier) with dynamic target language
+    var url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=' + currentSourceLang + '&tl=' + currentTargetLang + '&dt=t&q=' + encodeURIComponent(text);
+    
+    fetch(url)
+      .then(response => response.json())
+      .then(data => {
+        if (data && data[0] && data[0][0] && data[0][0][0]) {
+          if (lcTranslation.firstChild) {
+            lcTranslation.firstChild.data = data[0][0][0];
+          }
+        }
+        // Remove processing animation
+        lcTranslation.classList.remove('processing');
+      })
+      .catch(error => {
+        console.log('Translation error:', error);
+        // Fallback: show original text if translation fails
+        if (lcTranslation.firstChild) {
+          lcTranslation.firstChild.data = text;
+        }
+        // Remove processing animation
+        lcTranslation.classList.remove('processing');
+      });
+  }, 500); // 500ms debounce
+}
+
 function toggleSpeechRecognition(event) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  
   if(recognizing) {
-    recognition.stop();
-    lc.style.display = "none";
-    lc.firstChild.data = "Begin speaking. Click to stop.";
-    button.style.display = "inline-block";    
-    $('body').removeClass('lc-on');
-    showRecordings();
+    stopRecognition(event);
     return;
   } else {
+    // Start recognition
     lc.style.display = "inline-block";
+    lcTranslation.style.display = "inline-block";
     button.style.display = "none";
+    document.getElementById('lc-stop').style.display = "block";
     $('body').addClass('lc-on');
     recognition.start();    
   }
   autoRestart = false;
+}
+
+function stopRecognition(event) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  
+  // Stop recognition
+  recognition.stop();
+  recognizing = false;
+  
+  // Hide caption elements
+  lc.style.display = "none";
+  lcTranslation.style.display = "none";
+  document.getElementById('lc-stop').style.display = "none";
+  
+  // Reset text
+  lc.firstChild.data = "Begin speaking. Click to stop.";
+  lcTranslation.firstChild.data = "";
+  
+  // Show button and remove active state
+  button.style.display = "inline-block";    
+  $('body').removeClass('lc-on');
+  
+  // Show recordings section
+  showRecordings();
+  
+  // Clear any pending translation
+  if (translationTimeout) {
+    clearTimeout(translationTimeout);
+    translationTimeout = null;
+  }
 }
 
 function refresh(event) {
